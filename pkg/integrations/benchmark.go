@@ -268,6 +268,42 @@ func (g *BenchmarkGenerator) isContainerPackage() bool {
 	return false
 }
 
+// detectDataNamespaces finds the primary data namespaces from the fields
+func (g *BenchmarkGenerator) detectDataNamespaces(fields []PackageField, ecsNamespaces map[string]bool) []string {
+	namespaceCount := make(map[string]int)
+
+	for _, f := range fields {
+		parts := strings.Split(f.Name, ".")
+		if len(parts) > 0 {
+			ns := parts[0]
+			// Skip ECS namespaces
+			if !ecsNamespaces[ns] {
+				namespaceCount[ns]++
+			}
+		}
+	}
+
+	// Sort namespaces by count (most fields first)
+	type nsCount struct {
+		ns    string
+		count int
+	}
+	var sorted []nsCount
+	for ns, count := range namespaceCount {
+		sorted = append(sorted, nsCount{ns, count})
+	}
+	sort.Slice(sorted, func(i, j int) bool {
+		return sorted[i].count > sorted[j].count
+	})
+
+	// Return namespace names
+	var result []string
+	for _, nc := range sorted {
+		result = append(result, nc.ns)
+	}
+	return result
+}
+
 // mapFieldType maps Elasticsearch field types to generator types
 func mapFieldType(esType string) string {
 	typeMap := map[string]string{
@@ -516,6 +552,16 @@ func (g *BenchmarkGenerator) buildTemplate(ds *DataStream) string {
 	hasContainer := g.hasFieldPrefix(ds.Fields, "container.") || g.isContainerPackage()
 	hasLog := g.hasFieldPrefix(ds.Fields, "log.") || strings.Contains(ds.Name, "log")
 
+	// Find primary namespaces from actual fields (excluding ECS fields)
+	ecsNamespaces := map[string]bool{
+		"@timestamp": true, "agent": true, "cloud": true, "container": true,
+		"data_stream": true, "ecs": true, "error": true, "event": true,
+		"file": true, "host": true, "input": true, "log": true, "message": true,
+		"metricset": true, "orchestrator": true, "process": true, "related": true,
+		"service": true, "source": true, "tags": true, "url": true, "user": true,
+	}
+	dataNamespaces := g.detectDataNamespaces(ds.Fields, ecsNamespaces)
+
 	// Generate variable declarations
 	buf.WriteString(`{{- $timestamp := generate "@timestamp" }}
 `)
@@ -599,10 +645,13 @@ func (g *BenchmarkGenerator) buildTemplate(ds *DataStream) string {
 `)
 	}
 
-	// Generate main data section based on package name
-	mainSection := g.config.PackageName
-	if node, ok := root.children[mainSection]; ok {
-		g.writeJSONNode(&buf, mainSection, node, "    ", true)
+	// Generate main data sections based on detected namespaces
+	// This handles cases where package name differs from field namespace (e.g., aws_mq vs aws.amazonmq)
+	for i, ns := range dataNamespaces {
+		if node, ok := root.children[ns]; ok {
+			isLast := i == len(dataNamespaces)-1
+			g.writeJSONNode(&buf, ns, node, "    ", !isLast)
+		}
 	}
 
 	// Generate service section
