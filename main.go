@@ -20,6 +20,12 @@ func main() {
 	rootCmd.AddCommand(cmd.TemplateCmd())
 	rootCmd.AddCommand(cmd.VersionCmd())
 
+	// Integration workflow tools
+	rootCmd.AddCommand(cmd.GenerateBenchmarkCmd())
+	rootCmd.AddCommand(cmd.AnalyzeCoverageCmd())
+	rootCmd.AddCommand(cmd.ValidateECSCmd())
+	rootCmd.AddCommand(cmd.ListPackageCmd())
+
 	err := rootCmd.Execute()
 	if err != nil {
 		os.Exit(1)
