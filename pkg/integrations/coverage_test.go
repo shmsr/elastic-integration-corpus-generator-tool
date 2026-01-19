@@ -26,7 +26,9 @@ func TestExtractTemplateFields(t *testing.T) {
 	assert.Contains(t, fields, "@timestamp")
 	assert.Contains(t, fields, "system.cpu.usage")
 	assert.Contains(t, fields, "system.memory.bytes")
-	assert.Len(t, fields, 3) // No duplicates
+	assert.Contains(t, fields, "cpu")
+	assert.Contains(t, fields, "memory")
+	assert.Len(t, fields, 5) // No duplicates
 }
 
 func TestFlattenJSON(t *testing.T) {

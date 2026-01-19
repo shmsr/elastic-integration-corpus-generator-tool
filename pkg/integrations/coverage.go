@@ -5,6 +5,7 @@
 package integrations
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"regexp"
@@ -16,23 +17,23 @@ import (
 
 // CoverageReport represents the field coverage analysis
 type CoverageReport struct {
-	PackageName      string
-	DataStreamName   string
-	TotalFields      int
-	CoveredFields    int
-	MissingFields    []string
-	ExtraFields      []string
-	CoveragePercent  float64
-	FieldDetails     []FieldCoverage
+	PackageName     string
+	DataStreamName  string
+	TotalFields     int
+	CoveredFields   int
+	MissingFields   []string
+	ExtraFields     []string
+	CoveragePercent float64
+	FieldDetails    []FieldCoverage
 }
 
 // FieldCoverage represents coverage status for a single field
 type FieldCoverage struct {
-	Name        string
-	Type        string
-	IsCovered   bool
-	IsExtra     bool
-	Source      string // "package" or "template"
+	Name      string
+	Type      string
+	IsCovered bool
+	IsExtra   bool
+	Source    string // "package" or "template"
 }
 
 // CoverageAnalyzer analyzes field coverage in templates
@@ -196,8 +197,8 @@ func extractTemplateFields(template string) []string {
 	re := regexp.MustCompile(`generate\s+"([^"]+)"`)
 	matches := re.FindAllStringSubmatch(template, -1)
 
-	fields := make([]string, 0, len(matches))
 	seen := make(map[string]bool)
+	fields := make([]string, 0, len(matches))
 
 	for _, match := range matches {
 		if len(match) > 1 && !seen[match[1]] {
@@ -206,7 +207,76 @@ func extractTemplateFields(template string) []string {
 		}
 	}
 
+	// Add literal fields from JSON keys (e.g., event.dataset: "value")
+	for _, name := range extractLiteralTemplateFields(template) {
+		if !seen[name] {
+			fields = append(fields, name)
+			seen[name] = true
+		}
+	}
+
 	return fields
+}
+
+func extractLiteralTemplateFields(template string) []string {
+	scanner := bufio.NewScanner(strings.NewReader(template))
+	keyRe := regexp.MustCompile(`"([^"]+)"\s*:`)
+
+	fields := make(map[string]bool)
+	var stack []string
+
+	for scanner.Scan() {
+		line := stripTemplateTags(scanner.Text())
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		matches := keyRe.FindAllStringSubmatchIndex(line, -1)
+		for _, match := range matches {
+			key := line[match[2]:match[3]]
+			after := strings.TrimSpace(line[match[1]:])
+
+			fullKey := key
+			if len(stack) > 0 {
+				fullKey = strings.Join(append(stack, key), ".")
+			}
+
+			if strings.HasPrefix(after, "{") {
+				stack = append(stack, key)
+			} else {
+				fields[fullKey] = true
+			}
+		}
+
+		closeCount := strings.Count(line, "}")
+		for i := 0; i < closeCount && len(stack) > 0; i++ {
+			stack = stack[:len(stack)-1]
+		}
+	}
+
+	result := make([]string, 0, len(fields))
+	for name := range fields {
+		result = append(result, name)
+	}
+	sort.Strings(result)
+	return result
+}
+
+func stripTemplateTags(line string) string {
+	for {
+		start := strings.Index(line, "{{")
+		if start == -1 {
+			break
+		}
+		end := strings.Index(line[start+2:], "}}")
+		if end == -1 {
+			break
+		}
+		endIdx := start + 2 + end + 2
+		line = line[:start] + line[endIdx:]
+	}
+	return line
 }
 
 // flattenJSON flattens a nested JSON object into dot-notation field names

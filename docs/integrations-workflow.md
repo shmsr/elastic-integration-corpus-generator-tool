@@ -84,6 +84,12 @@ elastic-integration-corpus-generator-tool generate-benchmark \
   --package-path /path/to/packages/kubernetes \
   --all
 
+# Always write to the package's _dev/benchmark/rally directory
+elastic-integration-corpus-generator-tool generate-benchmark \
+  --package-path /path/to/packages/kubernetes \
+  --all \
+  --output-mode package
+
 # Custom output directory and event count
 elastic-integration-corpus-generator-tool generate-benchmark \
   --package-path /path/to/packages/aws \
@@ -99,6 +105,7 @@ elastic-integration-corpus-generator-tool generate-benchmark \
 | `--package-path` | `-p` | Path to the integration package (required) | |
 | `--data-stream` | `-d` | Data stream name(s) to generate benchmark for | |
 | `--output-dir` | `-o` | Output directory | `<package>/_dev/benchmark/rally/` |
+| `--output-mode` | | Output mode: `flat` or `package` | `flat` |
 | `--all` | `-a` | Generate benchmarks for all data streams | `false` |
 | `--total-events` | `-n` | Total events to generate in benchmark | `20000` |
 
@@ -125,6 +132,8 @@ The generator automatically:
 ## analyze-coverage
 
 Analyze how many package fields are covered by a benchmark template or sample event.
+Coverage counts both generated fields (`{{generate "field.name"}}`) and literal
+fields defined directly in the template (for example `event.dataset: "aws.billing"`).
 
 ### Usage
 

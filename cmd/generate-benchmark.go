@@ -19,6 +19,7 @@ func GenerateBenchmarkCmd() *cobra.Command {
 	var packagePath string
 	var dataStream string
 	var outputDir string
+	var outputMode string
 	var allStreams bool
 	var totalEvents int
 
@@ -43,6 +44,12 @@ Example:
     --package-path /path/to/integrations/packages/kubernetes \
     --all \
     --output-dir ./_dev/benchmark/rally/
+
+  # Always write to the package's _dev/benchmark/rally directory
+  elastic-integration-corpus-generator-tool generate-benchmark \
+    --package-path /path/to/integrations/packages/kubernetes \
+    --all \
+    --output-mode package
 `,
 		RunE: func(c *cobra.Command, args []string) error {
 			if packagePath == "" {
@@ -65,8 +72,18 @@ Example:
 			fmt.Printf("📊 Data streams found: %d\n", len(pkg.DataStreams))
 
 			// Determine output directory
-			if outputDir == "" {
+			if outputMode == "" {
+				outputMode = "flat"
+			}
+			switch outputMode {
+			case "flat":
+				if outputDir == "" {
+					outputDir = filepath.Join(packagePath, "_dev", "benchmark", "rally")
+				}
+			case "package":
 				outputDir = filepath.Join(packagePath, "_dev", "benchmark", "rally")
+			default:
+				return fmt.Errorf("invalid --output-mode '%s' (valid: flat, package)", outputMode)
 			}
 
 			// Create output directory
@@ -121,6 +138,7 @@ Example:
 	cmd.Flags().StringVarP(&packagePath, "package-path", "p", "", "Path to the integration package (required)")
 	cmd.Flags().StringVarP(&dataStream, "data-stream", "d", "", "Data stream name to generate benchmark for")
 	cmd.Flags().StringVarP(&outputDir, "output-dir", "o", "", "Output directory (defaults to <package>/_dev/benchmark/rally/)")
+	cmd.Flags().StringVar(&outputMode, "output-mode", "flat", "Output mode: flat or package")
 	cmd.Flags().BoolVarP(&allStreams, "all", "a", false, "Generate benchmarks for all data streams")
 	cmd.Flags().IntVarP(&totalEvents, "total-events", "n", 20000, "Total events to generate in benchmark")
 
