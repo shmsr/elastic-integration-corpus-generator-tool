@@ -34,6 +34,13 @@ Run `elastic-integration-corpus-generator-tool <command> --help` for command-spe
 | `analyze-coverage` | Analyze field coverage in templates |
 | `validate-ecs` | Validate fields against ECS |
 
+### Alerting Commands
+
+| Command | Description |
+|---------|-------------|
+| `list-alerts` | List alerting rule templates in a package |
+| `generate-alert-data` | Generate events that trigger alerting rules |
+
 ### Utility Commands
 
 | Command | Description |
@@ -189,6 +196,55 @@ elastic-integration-corpus-generator-tool validate-ecs \
 elastic-integration-corpus-generator-tool validate-ecs \
   --package-path /path/to/packages/aws \
   --all
+```
+
+---
+
+## Alerting Commands
+
+### list-alerts
+
+List alerting rule templates in a package.
+
+```bash
+# List all alerting rules
+elastic-integration-corpus-generator-tool list-alerts \
+  --package-path /path/to/packages/mongodb
+
+# Show the ES|QL queries
+elastic-integration-corpus-generator-tool list-alerts \
+  --package-path /path/to/packages/mongodb \
+  --show-query
+
+# JSON output
+elastic-integration-corpus-generator-tool list-alerts \
+  --package-path /path/to/packages/aws \
+  --json
+```
+
+### generate-alert-data
+
+Generate events that trigger (or don't trigger) alerting rules.
+
+```bash
+# Generate events that TRIGGER the alert
+elastic-integration-corpus-generator-tool generate-alert-data \
+  --package-path /path/to/packages/mongodb \
+  --rule-id mongodb-cache-usage-high \
+  --trigger
+
+# Generate safe events (won't trigger)
+elastic-integration-corpus-generator-tool generate-alert-data \
+  --package-path /path/to/packages/mongodb \
+  --rule-id mongodb-cache-usage-high
+
+# Generate multiple events to file
+elastic-integration-corpus-generator-tool generate-alert-data \
+  --package-path /path/to/packages/aws \
+  --rule-id aws-ec2-high-cpu-utilization \
+  --trigger \
+  --num-events 10 \
+  --output ./alert-test-data.ndjson
 ```
 
 ---

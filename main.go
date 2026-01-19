@@ -27,6 +27,10 @@ func main() {
 	rootCmd.AddCommand(cmd.ListPackageCmd())
 	rootCmd.AddCommand(cmd.GenerateSampleEventCmd())
 
+	// Alerting tools
+	rootCmd.AddCommand(cmd.ListAlertsCmd())
+	rootCmd.AddCommand(cmd.GenerateAlertDataCmd())
+
 	err := rootCmd.Execute()
 	if err != nil {
 		os.Exit(1)

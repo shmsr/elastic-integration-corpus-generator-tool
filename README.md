@@ -35,6 +35,10 @@ elastic-integration-corpus-generator-tool generate-benchmark \
 - **`analyze-coverage`** - Analyze field coverage in templates
 - **`validate-ecs`** - Validate fields against Elastic Common Schema
 
+### Alerting Tools
+- **`list-alerts`** - List alerting rule templates in a package
+- **`generate-alert-data`** - Generate events that trigger alerting rules
+
 ## Documentation
 
 | Document | Description |

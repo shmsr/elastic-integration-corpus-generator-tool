@@ -13,6 +13,8 @@ The corpus generator provides several commands specifically designed to help int
 | `generate-sample-event` | Generate sample_event.json for a data stream |
 | `analyze-coverage` | Analyze field coverage in templates |
 | `validate-ecs` | Validate fields against ECS |
+| `list-alerts` | List alerting rule templates in a package |
+| `generate-alert-data` | Generate events that trigger alerting rules |
 
 ---
 
@@ -391,3 +393,131 @@ The generator automatically includes:
 Customize the `config.yml` to add:
 - Specific container images as enums
 - Realistic resource limits and requests
+
+---
+
+## list-alerts
+
+List alerting rule templates defined in an integration package's `kibana/alerting_rule_template` directory.
+
+### Usage
+
+```bash
+# List all alerting rules
+elastic-integration-corpus-generator-tool list-alerts \
+  --package-path /path/to/packages/mongodb
+
+# Show the ES|QL queries
+elastic-integration-corpus-generator-tool list-alerts \
+  --package-path /path/to/packages/mongodb \
+  --show-query
+
+# JSON output
+elastic-integration-corpus-generator-tool list-alerts \
+  --package-path /path/to/packages/aws \
+  --json
+```
+
+### Flags
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--package-path` | `-p` | Path to the integration package (required) |
+| `--show-query` | | Show the ES|QL queries |
+| `--json` | | Output as JSON |
+
+### Example Output
+
+```
+📢 Alerting Rule Templates (6 total)
+============================================================
+
+📋 [MongoDB] WiredTiger cache pressure
+   ID: mongodb-cache-usage-high
+   Type: .es-query
+   Schedule: 1m
+   Time Window: 5m
+   Tags: MongoDB
+
+📋 [MongoDB Availability] High connection usage
+   ID: mongodb-connection-usage-high
+   Type: .es-query
+   Schedule: 1m
+   Time Window: 5m
+   Tags: MongoDB
+```
+
+---
+
+## generate-alert-data
+
+Generate sample events designed to trigger (or not trigger) alerting rules.
+
+This is useful for testing that alerting rules work correctly.
+
+### Usage
+
+```bash
+# Generate events that TRIGGER the alert
+elastic-integration-corpus-generator-tool generate-alert-data \
+  --package-path /path/to/packages/mongodb \
+  --rule-id mongodb-cache-usage-high \
+  --trigger
+
+# Generate safe events (won't trigger)
+elastic-integration-corpus-generator-tool generate-alert-data \
+  --package-path /path/to/packages/mongodb \
+  --rule-id mongodb-cache-usage-high
+
+# Generate multiple events
+elastic-integration-corpus-generator-tool generate-alert-data \
+  --package-path /path/to/packages/aws \
+  --rule-id aws-ec2-high-cpu-utilization \
+  --trigger \
+  --num-events 10
+
+# Output to file (NDJSON format)
+elastic-integration-corpus-generator-tool generate-alert-data \
+  --package-path /path/to/packages/mongodb \
+  --rule-id mongodb-connection-usage-high \
+  --trigger \
+  --output ./alert-test-data.ndjson
+```
+
+### Flags
+
+| Flag | Short | Description | Default |
+|------|-------|-------------|---------|
+| `--package-path` | `-p` | Path to the integration package (required) | |
+| `--rule-id` | `-r` | ID of the alerting rule (required) | |
+| `--trigger` | | Generate events that will trigger the alert | `false` |
+| `--num-events` | `-n` | Number of events to generate | `1` |
+| `--output` | `-o` | Output file path | stdout |
+
+### How It Works
+
+1. Parses the alerting rule's ES|QL query
+2. Extracts threshold conditions (e.g., `> 85`, `< 15`)
+3. Identifies the relevant data stream and fields
+4. Generates events with values above/below thresholds
+
+### Example
+
+For the MongoDB cache alert with condition `cache_usage_pct > 85`:
+
+**Trigger mode (`--trigger`)**: Generates events with ~102% cache usage (above 85%)  
+**Safe mode (default)**: Generates events with ~42.5% cache usage (below 85%)
+
+### Packages with Alerting Rules
+
+Several infraobs-owned packages include alerting rule templates:
+
+| Package | Alert Rules |
+|---------|-------------|
+| `mongodb` | 6 rules (cache, connections, replication) |
+| `mysql` | 3 rules (galera, replication lag, slow queries) |
+| `microsoft_sqlserver` | 3 rules (lock waits, memory, log space) |
+| `aws` | 8 rules (EC2, Lambda, SNS, SQS) |
+| `azure_openai` | 3 rules (latency, utilization, errors) |
+| `azure_ai_foundry` | 3 rules (latency, availability, utilization) |
+| `aws_bedrock_agentcore` | 15 rules (various agent errors) |
