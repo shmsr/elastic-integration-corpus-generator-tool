@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/elastic/elastic-integration-corpus-generator-tool/pkg/esql"
 	"github.com/spf13/afero"
 )
 
@@ -137,7 +138,49 @@ func (p *AlertingRuleParser) ExtractTriggerConfig(rule AlertingRuleTemplate) (*A
 		return nil, fmt.Errorf("rule %s has no ES|QL query", rule.ID)
 	}
 
-	esql := rule.Attributes.Params.ESQLQuery.ESQL
+	esqlQuery := rule.Attributes.Params.ESQLQuery.ESQL
+	config := &AlertTriggerConfig{
+		RuleName: rule.Attributes.Name,
+		RuleID:   rule.ID,
+	}
+
+	// Try the new parser first
+	parsed, err := esql.Parse(esqlQuery)
+	if err == nil && parsed != nil {
+		// Use the new parser's extracted config
+		alertConfig := esql.ExtractAlertConfig(parsed)
+		
+		config.Index = alertConfig.Index
+		config.DataStream = alertConfig.DataStream
+		config.GroupByField = strings.Trim(alertConfig.GroupByField, "`")
+		
+		// Convert conditions
+		for _, cond := range alertConfig.Conditions {
+			config.Conditions = append(config.Conditions, AlertCondition{
+				Field:     cond.Field,
+				Operator:  cond.Operator,
+				Threshold: cond.Threshold,
+			})
+		}
+		
+		// Convert fields
+		for _, f := range alertConfig.Fields {
+			config.Fields = append(config.Fields, AlertField{
+				Name:         f.Name,
+				TriggerValue: f.TriggerValue,
+				SafeValue:    f.SafeValue,
+			})
+		}
+		
+		return config, nil
+	}
+
+	// Fallback to regex-based parsing if the new parser fails
+	return p.extractTriggerConfigFallback(esqlQuery, rule)
+}
+
+// extractTriggerConfigFallback uses regex-based parsing as a fallback
+func (p *AlertingRuleParser) extractTriggerConfigFallback(esqlQuery string, rule AlertingRuleTemplate) (*AlertTriggerConfig, error) {
 	config := &AlertTriggerConfig{
 		RuleName: rule.Attributes.Name,
 		RuleID:   rule.ID,
@@ -145,7 +188,7 @@ func (p *AlertingRuleParser) ExtractTriggerConfig(rule AlertingRuleTemplate) (*A
 
 	// Extract index/data stream from FROM clause
 	fromRegex := regexp.MustCompile(`FROM\s+([\w\-\*\.]+)`)
-	if match := fromRegex.FindStringSubmatch(esql); len(match) > 1 {
+	if match := fromRegex.FindStringSubmatch(esqlQuery); len(match) > 1 {
 		config.Index = match[1]
 		// Extract data stream from index pattern (e.g., metrics-mongodb.status-* -> mongodb.status)
 		parts := strings.Split(match[1], "-")
@@ -156,26 +199,26 @@ func (p *AlertingRuleParser) ExtractTriggerConfig(rule AlertingRuleTemplate) (*A
 
 	// Extract GROUP BY field
 	groupByRegex := regexp.MustCompile(`BY\s+([\w\.]+)`)
-	if match := groupByRegex.FindStringSubmatch(esql); len(match) > 1 {
+	if match := groupByRegex.FindStringSubmatch(esqlQuery); len(match) > 1 {
 		config.GroupByField = match[1]
 	}
 
 	// Extract conditions from WHERE clauses
-	config.Conditions = extractConditions(esql)
+	config.Conditions = extractConditionsRegex(esqlQuery)
 
 	// Extract fields from STATS clause
-	config.Fields = extractFieldsFromESQL(esql, config.Conditions)
+	config.Fields = extractFieldsFromESQLRegex(esqlQuery, config.Conditions)
 
 	return config, nil
 }
 
-// extractConditions parses WHERE clauses to find thresholds
-func extractConditions(esql string) []AlertCondition {
+// extractConditionsRegex parses WHERE clauses to find thresholds (regex fallback)
+func extractConditionsRegex(esqlQuery string) []AlertCondition {
 	var conditions []AlertCondition
 
 	// Match patterns like: field > 85, field < 15, field >= 80, `field` >= 0.85
 	whereRegex := regexp.MustCompile("(?:`([^`]+)`|(\\w+))\\s*(>|<|>=|<=|==|!=)\\s*([\\d.]+)")
-	matches := whereRegex.FindAllStringSubmatch(esql, -1)
+	matches := whereRegex.FindAllStringSubmatch(esqlQuery, -1)
 
 	for _, match := range matches {
 		if len(match) >= 5 {
@@ -196,8 +239,8 @@ func extractConditions(esql string) []AlertCondition {
 	return conditions
 }
 
-// extractFieldsFromESQL identifies fields used in the query
-func extractFieldsFromESQL(esql string, conditions []AlertCondition) []AlertField {
+// extractFieldsFromESQLRegex identifies fields used in the query (regex fallback)
+func extractFieldsFromESQLRegex(esqlQuery string, conditions []AlertCondition) []AlertField {
 	var fields []AlertField
 	seenFields := make(map[string]bool)
 
@@ -205,7 +248,7 @@ func extractFieldsFromESQL(esql string, conditions []AlertCondition) []AlertFiel
 	// e.g., AVG(mongodb.status.wired_tiger.cache.used.bytes) or AVG(`system.cpu.total.norm.pct`)
 	// Also handle formulas like AVG(host.cpu.usage*100)
 	statsRegex := regexp.MustCompile("(\\w+)\\s*=\\s*(AVG|MAX|MIN|SUM|COUNT)\\((?:`([^`]+)`|([\\w\\.]+(?:\\*\\d+)?))\\)")
-	matches := statsRegex.FindAllStringSubmatch(esql, -1)
+	matches := statsRegex.FindAllStringSubmatch(esqlQuery, -1)
 
 	// Build alias to field mapping
 	aliasToField := make(map[string]string)
@@ -230,7 +273,7 @@ func extractFieldsFromESQL(esql string, conditions []AlertCondition) []AlertFiel
 	}
 
 	// Detect ratio-based alerts (e.g., field_pct = (a / b) * 100)
-	isRatioAlert := strings.Contains(esql, "* 100") || strings.Contains(esql, "*100")
+	isRatioAlert := strings.Contains(esqlQuery, "* 100") || strings.Contains(esqlQuery, "*100")
 
 	// Map conditions to aliases
 	aliasCondition := make(map[string]AlertCondition)
@@ -248,13 +291,13 @@ func extractFieldsFromESQL(esql string, conditions []AlertCondition) []AlertFiel
 		// Look for division pattern in EVAL statements: (field1 / field2) * 100
 		// Be specific to avoid matching comments
 		divRegex := regexp.MustCompile(`EVAL\s+\w+\s*=\s*\(?\s*(\w+)\s*/\s*(\w+)\s*\)?`)
-		if divMatch := divRegex.FindStringSubmatch(esql); len(divMatch) >= 3 {
+		if divMatch := divRegex.FindStringSubmatch(esqlQuery); len(divMatch) >= 3 {
 			numeratorAlias = divMatch[1]
 			denominatorAlias = divMatch[2]
 
 			// Check if denominator is a computed sum (EVAL x = a + b)
 			sumRegex := regexp.MustCompile(`EVAL\s+` + denominatorAlias + `\s*=\s*(\w+)\s*\+\s*(\w+)`)
-			if sumMatch := sumRegex.FindStringSubmatch(esql); len(sumMatch) >= 3 {
+			if sumMatch := sumRegex.FindStringSubmatch(esqlQuery); len(sumMatch) >= 3 {
 				sumComponents[sumMatch[1]] = true
 				sumComponents[sumMatch[2]] = true
 			}
@@ -347,7 +390,7 @@ func extractFieldsFromESQL(esql string, conditions []AlertCondition) []AlertFiel
 				// Try to match field to any condition
 				matched := false
 				for _, cond := range conditions {
-					if strings.Contains(esql, fieldName) && strings.Contains(esql, cond.Field) {
+					if strings.Contains(esqlQuery, fieldName) && strings.Contains(esqlQuery, cond.Field) {
 						switch cond.Operator {
 						case ">":
 							field.TriggerValue = cond.Threshold + (cond.Threshold * 0.2)

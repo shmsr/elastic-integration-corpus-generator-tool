@@ -181,6 +181,10 @@ func generateAlertEvents(config *integrations.AlertTriggerConfig, ds *integratio
 
 		// Add fields with trigger or safe values
 		for _, field := range config.Fields {
+			// Skip fields with empty names (like COUNT(*))
+			if field.Name == "" {
+				continue
+			}
 			var value interface{}
 			if trigger {
 				value = field.TriggerValue
@@ -234,15 +238,14 @@ func setNestedField(obj map[string]interface{}, path string, value interface{}) 
 func addFieldsFromDataStream(event map[string]interface{}, ds *integrations.DataStream, config *integrations.AlertTriggerConfig, trigger bool) {
 	// Add fields from data stream that are relevant to the alert
 	for _, field := range ds.Fields {
-		// Skip if we already set this field
+		// Skip if we already set this field in config
 		if containsField(config.Fields, field.Name) {
 			continue
 		}
-
-		// Check if this field is referenced in the alert
-		esql := ""
-		if config.Index != "" {
-			esql = config.Index // Used as proxy to check if field is relevant
+		
+		// Skip if this field is already set in the event
+		if hasNestedField(event, field.Name) {
+			continue
 		}
 
 		// Add common monitoring fields
@@ -261,21 +264,63 @@ func addFieldsFromDataStream(event map[string]interface{}, ds *integrations.Data
 				} else {
 					value = 1000 // Low value
 				}
-			case "double", "float":
-				if trigger {
-					value = 95.5
+			case "double", "float", "scaled_float":
+				// Use percentage-appropriate values for pct fields
+				if strings.Contains(field.Name, "pct") || strings.Contains(field.Name, "percent") {
+					if trigger {
+						value = 0.95 // 95%
+					} else {
+						value = 0.15 // 15%
+					}
 				} else {
-					value = 10.5
+					if trigger {
+						value = 95.5
+					} else {
+						value = 10.5
+					}
 				}
 			case "boolean":
 				value = trigger
+			case "keyword", "text", "constant_keyword":
+				// Skip string fields for monitoring data
+				continue
 			default:
-				value = "test-value"
+				// For unknown types, try numeric if field name suggests it
+				if strings.Contains(field.Name, "pct") || strings.Contains(field.Name, "percent") ||
+					strings.Contains(field.Name, "ratio") || strings.Contains(field.Name, "usage") {
+					if trigger {
+						value = 0.95
+					} else {
+						value = 0.15
+					}
+				} else {
+					continue // Skip unknown types
+				}
 			}
 			setNestedField(event, field.Name, value)
 		}
-		_ = esql // silence unused warning
 	}
+}
+
+func hasNestedField(obj map[string]interface{}, path string) bool {
+	parts := strings.Split(path, ".")
+	current := obj
+	
+	for i, part := range parts {
+		val, exists := current[part]
+		if !exists {
+			return false
+		}
+		if i == len(parts)-1 {
+			return true
+		}
+		next, ok := val.(map[string]interface{})
+		if !ok {
+			return false
+		}
+		current = next
+	}
+	return false
 }
 
 func containsField(fields []integrations.AlertField, name string) bool {
