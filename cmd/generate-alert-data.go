@@ -187,7 +187,9 @@ func generateAlertEvents(config *integrations.AlertTriggerConfig, ds *integratio
 			} else {
 				value = field.SafeValue
 			}
-			setNestedField(event, field.Name, value)
+			if value != nil {
+				setNestedField(event, field.Name, value)
+			}
 		}
 
 		// Add common ECS fields
