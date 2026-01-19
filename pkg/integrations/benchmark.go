@@ -647,10 +647,10 @@ func (g *BenchmarkGenerator) buildTemplate(ds *DataStream) string {
 
 	// Generate main data sections based on detected namespaces
 	// This handles cases where package name differs from field namespace (e.g., aws_mq vs aws.amazonmq)
-	for i, ns := range dataNamespaces {
+	for _, ns := range dataNamespaces {
 		if node, ok := root.children[ns]; ok {
-			isLast := i == len(dataNamespaces)-1
-			g.writeJSONNode(&buf, ns, node, "    ", !isLast)
+			// Always add comma since service/agent sections follow
+			g.writeJSONNode(&buf, ns, node, "    ", true)
 		}
 	}
 
