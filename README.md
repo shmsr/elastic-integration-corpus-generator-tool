@@ -31,6 +31,7 @@ elastic-integration-corpus-generator-tool generate-benchmark \
 ### Integration Workflow Tools
 - **`list-package`** - Explore integration packages and data streams
 - **`generate-benchmark`** - Auto-generate Rally benchmark files from package fields
+- **`generate-sample-event`** - Generate sample_event.json for data streams
 - **`analyze-coverage`** - Analyze field coverage in templates
 - **`validate-ecs`** - Validate fields against Elastic Common Schema
 
