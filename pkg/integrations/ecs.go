@@ -7,64 +7,142 @@ package integrations
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"sort"
 	"strings"
 	"sync"
+	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 // ECSValidator validates fields against the Elastic Common Schema
 type ECSValidator struct {
-	ecsFields     map[string]ECSField
-	loadOnce      sync.Once
-	loadErr       error
-	ecsVersion    string
-	useEmbedded   bool
+	ecsFields  map[string]ECSField
+	loadOnce   sync.Once
+	loadErr    error
+	ecsVersion string
+	useOnline  bool
+	httpClient *http.Client
 }
 
 // ECSField represents an ECS field definition
 type ECSField struct {
-	Name        string `json:"name"`
-	Type        string `json:"type"`
-	Description string `json:"description"`
-	Level       string `json:"level"` // core, extended, custom
+	Name        string `json:"name" yaml:"name"`
+	Type        string `json:"type" yaml:"type"`
+	Description string `json:"description" yaml:"description"`
+	Level       string `json:"level" yaml:"level"` // core, extended, custom
+	FlatName    string `json:"flat_name" yaml:"flat_name"`
 }
 
 // ECSValidationResult represents the result of ECS validation
 type ECSValidationResult struct {
-	DataStreamName  string
-	TotalFields     int
-	ECSFields       int
-	CustomFields    int
-	InvalidFields   []ECSFieldIssue
-	IsValid         bool
+	DataStreamName string
+	TotalFields    int
+	ECSFields      int
+	CustomFields   int
+	InvalidFields  []ECSFieldIssue
+	IsValid        bool
 }
 
 // ECSFieldIssue represents an issue with a field
 type ECSFieldIssue struct {
-	FieldName     string
-	IssueType     string // "type_mismatch", "unknown_ecs_field", "naming_convention"
-	ExpectedType  string
-	ActualType    string
-	Message       string
+	FieldName    string
+	IssueType    string // "type_mismatch", "unknown_ecs_field", "naming_convention"
+	ExpectedType string
+	ActualType   string
+	Message      string
 }
 
 // NewECSValidator creates a new ECS validator
 func NewECSValidator(version string) *ECSValidator {
 	return &ECSValidator{
-		ecsVersion:  version,
-		ecsFields:   make(map[string]ECSField),
-		useEmbedded: true,
+		ecsVersion: version,
+		ecsFields:  make(map[string]ECSField),
+		useOnline:  false,
+		httpClient: &http.Client{Timeout: 30 * time.Second},
+	}
+}
+
+// NewECSValidatorOnline creates a validator that fetches ECS schema from GitHub
+func NewECSValidatorOnline(version string) *ECSValidator {
+	return &ECSValidator{
+		ecsVersion: version,
+		ecsFields:  make(map[string]ECSField),
+		useOnline:  true,
+		httpClient: &http.Client{Timeout: 30 * time.Second},
 	}
 }
 
 // loadECSFields loads ECS field definitions
 func (v *ECSValidator) loadECSFields() error {
 	v.loadOnce.Do(func() {
-		// Use embedded core ECS fields (most commonly used)
-		v.loadEmbeddedECSFields()
+		if v.useOnline {
+			v.loadErr = v.fetchECSFromGitHub()
+		}
+		// Always load embedded fields as fallback/base
+		if v.loadErr != nil || !v.useOnline {
+			v.loadEmbeddedECSFields()
+			v.loadErr = nil
+		}
 	})
 	return v.loadErr
+}
+
+// fetchECSFromGitHub fetches the ECS schema from GitHub
+func (v *ECSValidator) fetchECSFromGitHub() error {
+	// Use the ecs_flat.yml which has a simpler structure
+	url := fmt.Sprintf("https://raw.githubusercontent.com/elastic/ecs/%s/generated/ecs/ecs_flat.yml", v.ecsVersion)
+
+	resp, err := v.httpClient.Get(url)
+	if err != nil {
+		return fmt.Errorf("failed to fetch ECS schema: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		// Try with 'main' branch as fallback
+		url = "https://raw.githubusercontent.com/elastic/ecs/main/generated/ecs/ecs_flat.yml"
+		resp, err = v.httpClient.Get(url)
+		if err != nil {
+			return fmt.Errorf("failed to fetch ECS schema: %w", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			return fmt.Errorf("failed to fetch ECS schema: status %d", resp.StatusCode)
+		}
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read ECS schema: %w", err)
+	}
+
+	// Parse the YAML - ecs_flat.yml is a map of field name to field definition
+	var flatFields map[string]struct {
+		Type      string `yaml:"type"`
+		Level     string `yaml:"level"`
+		FlatName  string `yaml:"flat_name"`
+		ShortDesc string `yaml:"short"`
+	}
+
+	if err := yaml.Unmarshal(body, &flatFields); err != nil {
+		return fmt.Errorf("failed to parse ECS schema: %w", err)
+	}
+
+	for name, f := range flatFields {
+		v.ecsFields[name] = ECSField{
+			Name:        name,
+			Type:        f.Type,
+			Level:       f.Level,
+			FlatName:    f.FlatName,
+			Description: f.ShortDesc,
+		}
+	}
+
+	return nil
 }
 
 // loadEmbeddedECSFields loads commonly used ECS fields
@@ -237,33 +315,6 @@ func (v *ECSValidator) loadEmbeddedECSFields() {
 		{Name: "url.top_level_domain", Type: "keyword", Level: "extended"},
 		{Name: "url.username", Type: "keyword", Level: "extended"},
 
-		// HTTP fields
-		{Name: "http.request.body.bytes", Type: "long", Level: "extended"},
-		{Name: "http.request.body.content", Type: "wildcard", Level: "extended"},
-		{Name: "http.request.bytes", Type: "long", Level: "extended"},
-		{Name: "http.request.method", Type: "keyword", Level: "extended"},
-		{Name: "http.request.mime_type", Type: "keyword", Level: "extended"},
-		{Name: "http.request.referrer", Type: "keyword", Level: "extended"},
-		{Name: "http.response.body.bytes", Type: "long", Level: "extended"},
-		{Name: "http.response.body.content", Type: "wildcard", Level: "extended"},
-		{Name: "http.response.bytes", Type: "long", Level: "extended"},
-		{Name: "http.response.mime_type", Type: "keyword", Level: "extended"},
-		{Name: "http.response.status_code", Type: "long", Level: "extended"},
-		{Name: "http.version", Type: "keyword", Level: "extended"},
-
-		// Log fields
-		{Name: "log.file.path", Type: "keyword", Level: "extended"},
-		{Name: "log.level", Type: "keyword", Level: "core"},
-		{Name: "log.logger", Type: "keyword", Level: "core"},
-		{Name: "log.origin.file.line", Type: "long", Level: "extended"},
-		{Name: "log.origin.file.name", Type: "keyword", Level: "extended"},
-		{Name: "log.origin.function", Type: "keyword", Level: "extended"},
-		{Name: "log.syslog.facility.code", Type: "long", Level: "extended"},
-		{Name: "log.syslog.facility.name", Type: "keyword", Level: "extended"},
-		{Name: "log.syslog.priority", Type: "long", Level: "extended"},
-		{Name: "log.syslog.severity.code", Type: "long", Level: "extended"},
-		{Name: "log.syslog.severity.name", Type: "keyword", Level: "extended"},
-
 		// Process fields
 		{Name: "process.args", Type: "keyword", Level: "extended"},
 		{Name: "process.args_count", Type: "long", Level: "extended"},
@@ -271,10 +322,6 @@ func (v *ECSValidator) loadEmbeddedECSFields() {
 		{Name: "process.entity_id", Type: "keyword", Level: "extended"},
 		{Name: "process.executable", Type: "keyword", Level: "extended"},
 		{Name: "process.exit_code", Type: "long", Level: "extended"},
-		{Name: "process.hash.md5", Type: "keyword", Level: "extended"},
-		{Name: "process.hash.sha1", Type: "keyword", Level: "extended"},
-		{Name: "process.hash.sha256", Type: "keyword", Level: "extended"},
-		{Name: "process.hash.sha512", Type: "keyword", Level: "extended"},
 		{Name: "process.name", Type: "keyword", Level: "extended"},
 		{Name: "process.pgid", Type: "long", Level: "extended"},
 		{Name: "process.pid", Type: "long", Level: "core"},
@@ -288,19 +335,11 @@ func (v *ECSValidator) loadEmbeddedECSFields() {
 
 		// File fields
 		{Name: "file.accessed", Type: "date", Level: "extended"},
-		{Name: "file.attributes", Type: "keyword", Level: "extended"},
 		{Name: "file.created", Type: "date", Level: "extended"},
-		{Name: "file.ctime", Type: "date", Level: "extended"},
-		{Name: "file.device", Type: "keyword", Level: "extended"},
 		{Name: "file.directory", Type: "keyword", Level: "extended"},
-		{Name: "file.drive_letter", Type: "keyword", Level: "extended"},
 		{Name: "file.extension", Type: "keyword", Level: "extended"},
 		{Name: "file.gid", Type: "keyword", Level: "extended"},
 		{Name: "file.group", Type: "keyword", Level: "extended"},
-		{Name: "file.hash.md5", Type: "keyword", Level: "extended"},
-		{Name: "file.hash.sha1", Type: "keyword", Level: "extended"},
-		{Name: "file.hash.sha256", Type: "keyword", Level: "extended"},
-		{Name: "file.hash.sha512", Type: "keyword", Level: "extended"},
 		{Name: "file.inode", Type: "keyword", Level: "extended"},
 		{Name: "file.mime_type", Type: "keyword", Level: "extended"},
 		{Name: "file.mode", Type: "keyword", Level: "extended"},
@@ -309,7 +348,6 @@ func (v *ECSValidator) loadEmbeddedECSFields() {
 		{Name: "file.owner", Type: "keyword", Level: "extended"},
 		{Name: "file.path", Type: "keyword", Level: "extended"},
 		{Name: "file.size", Type: "long", Level: "extended"},
-		{Name: "file.target_path", Type: "keyword", Level: "extended"},
 		{Name: "file.type", Type: "keyword", Level: "extended"},
 		{Name: "file.uid", Type: "keyword", Level: "extended"},
 
@@ -341,6 +379,31 @@ func (v *ECSValidator) loadEmbeddedECSFields() {
 		{Name: "orchestrator.resource.type", Type: "keyword", Level: "extended"},
 		{Name: "orchestrator.type", Type: "keyword", Level: "extended"},
 
+		// Log fields
+		{Name: "log.file.path", Type: "keyword", Level: "extended"},
+		{Name: "log.level", Type: "keyword", Level: "core"},
+		{Name: "log.logger", Type: "keyword", Level: "core"},
+		{Name: "log.origin.file.line", Type: "long", Level: "extended"},
+		{Name: "log.origin.file.name", Type: "keyword", Level: "extended"},
+		{Name: "log.origin.function", Type: "keyword", Level: "extended"},
+		{Name: "log.syslog.facility.code", Type: "long", Level: "extended"},
+		{Name: "log.syslog.facility.name", Type: "keyword", Level: "extended"},
+		{Name: "log.syslog.priority", Type: "long", Level: "extended"},
+		{Name: "log.syslog.severity.code", Type: "long", Level: "extended"},
+		{Name: "log.syslog.severity.name", Type: "keyword", Level: "extended"},
+
+		// HTTP fields
+		{Name: "http.request.body.bytes", Type: "long", Level: "extended"},
+		{Name: "http.request.bytes", Type: "long", Level: "extended"},
+		{Name: "http.request.method", Type: "keyword", Level: "extended"},
+		{Name: "http.request.mime_type", Type: "keyword", Level: "extended"},
+		{Name: "http.request.referrer", Type: "keyword", Level: "extended"},
+		{Name: "http.response.body.bytes", Type: "long", Level: "extended"},
+		{Name: "http.response.bytes", Type: "long", Level: "extended"},
+		{Name: "http.response.mime_type", Type: "keyword", Level: "extended"},
+		{Name: "http.response.status_code", Type: "long", Level: "extended"},
+		{Name: "http.version", Type: "keyword", Level: "extended"},
+
 		// Metricset fields (custom but common)
 		{Name: "metricset.name", Type: "keyword", Level: "custom"},
 		{Name: "metricset.period", Type: "long", Level: "custom"},
@@ -364,12 +427,18 @@ func (v *ECSValidator) Validate(ds *DataStream) (*ECSValidationResult, error) {
 	}
 
 	for _, f := range ds.Fields {
+		// Skip fields with empty types - they're likely imported/external references
+		if f.Type == "" {
+			result.CustomFields++
+			continue
+		}
+
 		// Check if it's an ECS field
 		if ecsField, isECS := v.isECSField(f.Name); isECS {
 			result.ECSFields++
 
-			// Check type compatibility
-			if !v.isTypeCompatible(f.Type, ecsField.Type) {
+			// Check type compatibility (skip if field type is empty)
+			if f.Type != "" && !v.isTypeCompatible(f.Type, ecsField.Type) {
 				result.InvalidFields = append(result.InvalidFields, ECSFieldIssue{
 					FieldName:    f.Name,
 					IssueType:    "type_mismatch",
@@ -385,6 +454,7 @@ func (v *ECSValidator) Validate(ds *DataStream) (*ECSValidationResult, error) {
 			// Check naming conventions for custom fields
 			if issue := v.checkNamingConvention(f.Name); issue != nil {
 				result.InvalidFields = append(result.InvalidFields, *issue)
+				// Naming convention issues are warnings, not failures
 			}
 		}
 	}
@@ -424,6 +494,14 @@ func (v *ECSValidator) isTypeCompatible(actual, expected string) bool {
 		return true
 	}
 
+	// Normalize types
+	actual = strings.ToLower(strings.TrimSpace(actual))
+	expected = strings.ToLower(strings.TrimSpace(expected))
+
+	if actual == expected {
+		return true
+	}
+
 	// Type compatibility mappings
 	compatible := map[string][]string{
 		"keyword":         {"constant_keyword", "text", "match_only_text", "wildcard"},
@@ -434,6 +512,7 @@ func (v *ECSValidator) isTypeCompatible(actual, expected string) bool {
 		"double":          {"float", "half_float", "scaled_float"},
 		"float":           {"double", "half_float", "scaled_float"},
 		"date":            {"date_nanos"},
+		"wildcard":        {"keyword", "text"},
 	}
 
 	if compatTypes, ok := compatible[expected]; ok {
@@ -483,6 +562,7 @@ func isCommonAbbreviation(s string) bool {
 	abbreviations := []string{
 		"AWS", "GCP", "EC2", "ECS", "EKS", "RDS", "S3", "VPC", "IAM", "CPU", "RAM", "IO", "ID",
 		"URL", "URI", "HTTP", "HTTPS", "TCP", "UDP", "IP", "DNS", "TLS", "SSL", "API",
+		"GB", "MB", "KB", "TB", "PB", "MS", "NS", "OS", "VM", "DB", "SQL", "UI", "UUID",
 	}
 	upper := strings.ToUpper(s)
 	for _, abbr := range abbreviations {
@@ -505,8 +585,13 @@ func (r *ECSValidationResult) FormatResult() string {
 	sb.WriteString(fmt.Sprintf("  - Custom Fields: %d\n", r.CustomFields))
 	sb.WriteString("\n")
 
-	if r.IsValid {
+	if r.IsValid && len(r.InvalidFields) == 0 {
 		sb.WriteString("✅ All fields pass ECS validation!\n")
+	} else if r.IsValid && len(r.InvalidFields) > 0 {
+		sb.WriteString(fmt.Sprintf("⚠️  Found %d warning(s):\n\n", len(r.InvalidFields)))
+		for _, issue := range r.InvalidFields {
+			sb.WriteString(fmt.Sprintf("  • %s\n", issue.Message))
+		}
 	} else {
 		sb.WriteString(fmt.Sprintf("❌ Found %d issue(s):\n\n", len(r.InvalidFields)))
 		for _, issue := range r.InvalidFields {
@@ -524,23 +609,4 @@ func (r *ECSValidationResult) FormatJSON() (string, error) {
 		return "", err
 	}
 	return string(data), nil
-}
-
-// FetchECSSchema fetches the ECS schema from GitHub (for online mode)
-func FetchECSSchema(version string) (map[string]ECSField, error) {
-	url := fmt.Sprintf("https://raw.githubusercontent.com/elastic/ecs/v%s/generated/ecs/ecs_flat.yml", version)
-
-	resp, err := http.Get(url)
-	if err != nil {
-		return nil, fmt.Errorf("failed to fetch ECS schema: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("failed to fetch ECS schema: status %d", resp.StatusCode)
-	}
-
-	// Parse the YAML response
-	// For now, we'll use the embedded fields
-	return nil, fmt.Errorf("online ECS fetch not yet implemented, using embedded fields")
 }

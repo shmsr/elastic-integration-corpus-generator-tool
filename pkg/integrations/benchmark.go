@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"text/template"
 
 	"github.com/spf13/afero"
 	"gopkg.in/yaml.v3"
@@ -307,54 +306,38 @@ func (g *BenchmarkGenerator) generateFieldConfig(f PackageField) *ConfigFieldDef
 	return cfg
 }
 
+// jsonNode represents a node in the JSON tree structure
+type jsonNode struct {
+	children map[string]*jsonNode
+	field    *PackageField // nil for intermediate nodes
+	isLeaf   bool
+}
+
 // generateTemplate creates the GoText template file
 func (g *BenchmarkGenerator) generateTemplate(ds *DataStream, outputDir string) error {
 	tmpl := g.buildTemplate(ds)
 	return afero.WriteFile(g.fs, filepath.Join(outputDir, "template.ndjson"), []byte(tmpl), 0644)
 }
 
-// TemplateData holds data for template generation
-type TemplateData struct {
-	PackageName    string
-	DataStreamName string
-	Fields         []TemplateField
-	HasCloud       bool
-	HasKubernetes  bool
-}
-
-// TemplateField represents a field for template generation
-type TemplateField struct {
-	Name      string
-	Type      string
-	IsNumeric bool
-	IsDate    bool
-	JSONPath  []string
-	VarName   string
-}
-
-// buildTemplate generates a GoText template
+// buildTemplate generates a GoText template with proper nested JSON structure
 func (g *BenchmarkGenerator) buildTemplate(ds *DataStream) string {
-	// Organize fields by their JSON path for proper nesting
-	fieldsByPrefix := make(map[string][]PackageField)
-
-	for _, f := range ds.Fields {
-		parts := strings.Split(f.Name, ".")
-		if len(parts) > 1 {
-			prefix := parts[0]
-			fieldsByPrefix[prefix] = append(fieldsByPrefix[prefix], f)
-		} else {
-			fieldsByPrefix["_root"] = append(fieldsByPrefix["_root"], f)
-		}
-	}
-
 	var buf bytes.Buffer
+
+	// Build a tree structure from field names
+	root := &jsonNode{children: make(map[string]*jsonNode)}
+
+	for i := range ds.Fields {
+		f := &ds.Fields[i]
+		parts := strings.Split(f.Name, ".")
+		insertField(root, parts, f)
+	}
 
 	// Generate variable declarations
 	buf.WriteString(`{{- $timestamp := generate "@timestamp" }}
 `)
 
 	// Check for cloud fields
-	hasCloud := len(fieldsByPrefix["cloud"]) > 0 || strings.HasPrefix(g.config.PackageName, "aws")
+	hasCloud := root.children["cloud"] != nil || strings.HasPrefix(g.config.PackageName, "aws")
 	if hasCloud {
 		buf.WriteString(`{{- $cloudRegion := generate "cloud.region" }}
 {{- $cloudAccountId := generate "cloud.account.id" }}
@@ -396,33 +379,8 @@ func (g *BenchmarkGenerator) buildTemplate(ds *DataStream) string {
 
 	// Generate main data section based on package name
 	mainSection := g.config.PackageName
-	if mainSection == "aws" {
-		// For AWS, use aws.<datastream> structure
-		buf.WriteString(fmt.Sprintf(`    "aws": {
-        "%s": {
-`, ds.Name))
-		g.writeFieldsSection(&buf, fieldsByPrefix[g.config.PackageName], "            ", true)
-		buf.WriteString(`        }
-    },
-`)
-	} else if mainSection == "kubernetes" {
-		// For Kubernetes
-		buf.WriteString(fmt.Sprintf(`    "kubernetes": {
-        "%s": {
-`, ds.Name))
-		g.writeFieldsSection(&buf, fieldsByPrefix[mainSection], "            ", true)
-		buf.WriteString(`        }
-    },
-`)
-	} else {
-		// Generic section
-		if fields, ok := fieldsByPrefix[mainSection]; ok && len(fields) > 0 {
-			buf.WriteString(fmt.Sprintf(`    "%s": {
-`, mainSection))
-			g.writeFieldsSection(&buf, fields, "        ", true)
-			buf.WriteString(`    },
-`)
-		}
+	if node, ok := root.children[mainSection]; ok {
+		g.writeJSONNode(&buf, mainSection, node, "    ", true)
 	}
 
 	// Generate service section
@@ -445,60 +403,80 @@ func (g *BenchmarkGenerator) buildTemplate(ds *DataStream) string {
 	return buf.String()
 }
 
-// writeFieldsSection writes fields as JSON
-func (g *BenchmarkGenerator) writeFieldsSection(buf *bytes.Buffer, fields []PackageField, indent string, isLast bool) {
-	if len(fields) == 0 {
+// insertField inserts a field into the JSON tree structure
+func insertField(node *jsonNode, parts []string, field *PackageField) {
+	if len(parts) == 0 {
 		return
 	}
 
-	// Sort fields for consistent output
-	sort.Slice(fields, func(i, j int) bool {
-		return fields[i].Name < fields[j].Name
-	})
+	key := parts[0]
+	if _, exists := node.children[key]; !exists {
+		node.children[key] = &jsonNode{children: make(map[string]*jsonNode)}
+	}
 
-	for i, f := range fields {
-		// Get the short name (after last dot)
-		parts := strings.Split(f.Name, ".")
-		shortName := parts[len(parts)-1]
+	if len(parts) == 1 {
+		node.children[key].field = field
+		node.children[key].isLeaf = true
+	} else {
+		insertField(node.children[key], parts[1:], field)
+	}
+}
 
-		isLastField := i == len(fields)-1
+// writeJSONNode recursively writes a JSON node to the buffer
+func (g *BenchmarkGenerator) writeJSONNode(buf *bytes.Buffer, name string, node *jsonNode, indent string, hasMore bool) {
+	// Get sorted keys for consistent output
+	keys := make([]string, 0, len(node.children))
+	for k := range node.children {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
 
-		switch f.Type {
-		case "long", "integer", "short", "byte", "double", "float", "half_float", "scaled_float":
-			g.writeNumericField(buf, f.Name, shortName, indent, !isLastField)
-		case "boolean":
-			g.writeBooleanField(buf, f.Name, shortName, indent, !isLastField)
-		default:
-			g.writeStringField(buf, f.Name, shortName, indent, !isLastField)
+	// If this is a leaf node with a field
+	if node.isLeaf && node.field != nil {
+		g.writeFieldValue(buf, name, node.field, indent, hasMore)
+		return
+	}
+
+	// If this node has children, write as nested object
+	if len(keys) > 0 {
+		buf.WriteString(fmt.Sprintf(`%s"%s": {
+`, indent, name))
+
+		for i, key := range keys {
+			child := node.children[key]
+			isLast := i == len(keys)-1
+			g.writeJSONNode(buf, key, child, indent+"    ", !isLast)
 		}
+
+		comma := ""
+		if hasMore {
+			comma = ","
+		}
+		buf.WriteString(fmt.Sprintf(`%s}%s
+`, indent, comma))
 	}
 }
 
-func (g *BenchmarkGenerator) writeNumericField(buf *bytes.Buffer, fullName, shortName, indent string, hasMore bool) {
+// writeFieldValue writes a single field value
+func (g *BenchmarkGenerator) writeFieldValue(buf *bytes.Buffer, name string, field *PackageField, indent string, hasMore bool) {
 	comma := ""
 	if hasMore {
 		comma = ","
 	}
-	buf.WriteString(fmt.Sprintf(`%s"%s": {{generate "%s"}}%s
-`, indent, shortName, fullName, comma))
-}
 
-func (g *BenchmarkGenerator) writeBooleanField(buf *bytes.Buffer, fullName, shortName, indent string, hasMore bool) {
-	comma := ""
-	if hasMore {
-		comma = ","
-	}
-	buf.WriteString(fmt.Sprintf(`%s"%s": {{generate "%s"}}%s
-`, indent, shortName, fullName, comma))
-}
+	fullName := field.Name
 
-func (g *BenchmarkGenerator) writeStringField(buf *bytes.Buffer, fullName, shortName, indent string, hasMore bool) {
-	comma := ""
-	if hasMore {
-		comma = ","
+	switch field.Type {
+	case "long", "integer", "short", "byte", "double", "float", "half_float", "scaled_float":
+		buf.WriteString(fmt.Sprintf(`%s"%s": {{generate "%s"}}%s
+`, indent, name, fullName, comma))
+	case "boolean":
+		buf.WriteString(fmt.Sprintf(`%s"%s": {{generate "%s"}}%s
+`, indent, name, fullName, comma))
+	default:
+		buf.WriteString(fmt.Sprintf(`%s"%s": "{{generate "%s"}}"%s
+`, indent, name, fullName, comma))
 	}
-	buf.WriteString(fmt.Sprintf(`%s"%s": "{{generate "%s"}}"%s
-`, indent, shortName, fullName, comma))
 }
 
 // generateRallyConfig creates the rally benchmark configuration file
@@ -522,35 +500,4 @@ func (g *BenchmarkGenerator) generateRallyConfig(ds *DataStream, benchmarkName s
 
 	content := "---\n" + string(data)
 	return afero.WriteFile(g.fs, filepath.Join(g.config.OutputDir, benchmarkName+".yml"), []byte(content), 0644)
-}
-
-// GenerateTemplateFull creates a complete template with proper JSON structure
-func GenerateTemplateFull(pkg *Package, ds *DataStream) (string, error) {
-	tmpl := `{{- $timestamp := generate "@timestamp" -}}
-{
-    "@timestamp": "{{$timestamp.Format "2006-01-02T15:04:05.999999Z07:00"}}",
-{{- range $i, $section := .Sections }}
-    "{{ $section.Name }}": {
-{{- range $j, $field := $section.Fields }}
-        "{{ $field.ShortName }}": {{ $field.Generator }}{{ if not $field.IsLast }},{{ end }}
-{{- end }}
-    }{{ if not $section.IsLast }},{{ end }}
-{{- end }}
-}
-`
-
-	t, err := template.New("benchmark").Parse(tmpl)
-	if err != nil {
-		return "", err
-	}
-
-	var buf bytes.Buffer
-	err = t.Execute(&buf, struct {
-		Sections []interface{}
-	}{})
-	if err != nil {
-		return "", err
-	}
-
-	return buf.String(), nil
 }
