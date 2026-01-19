@@ -434,7 +434,16 @@ func (v *ECSValidator) Validate(ds *DataStream) (*ECSValidationResult, error) {
 		}
 
 		// Check if it's an ECS field
-		if ecsField, isECS := v.isECSField(f.Name); isECS {
+		if ecsField, isECS, isExact := v.isECSField(f.Name); isECS {
+			if !isExact {
+				// Allow custom fields under ECS object/group namespaces
+				result.CustomFields++
+				if issue := v.checkNamingConvention(f.Name); issue != nil {
+					result.InvalidFields = append(result.InvalidFields, *issue)
+				}
+				continue
+			}
+
 			result.ECSFields++
 
 			// Check type compatibility (skip if field type is empty)
@@ -468,9 +477,9 @@ func (v *ECSValidator) Validate(ds *DataStream) (*ECSValidationResult, error) {
 }
 
 // isECSField checks if a field name matches an ECS field
-func (v *ECSValidator) isECSField(name string) (ECSField, bool) {
+func (v *ECSValidator) isECSField(name string) (ECSField, bool, bool) {
 	if field, ok := v.ecsFields[name]; ok {
-		return field, true
+		return field, true, true
 	}
 
 	// Check for prefix matches (e.g., source.geo.* matches source.geo.city_name)
@@ -480,12 +489,12 @@ func (v *ECSValidator) isECSField(name string) (ECSField, bool) {
 		if field, ok := v.ecsFields[prefix]; ok {
 			// Check if it's an object type that could contain nested fields
 			if field.Type == "object" || field.Type == "nested" || field.Type == "group" {
-				return field, true
+				return field, true, false
 			}
 		}
 	}
 
-	return ECSField{}, false
+	return ECSField{}, false, false
 }
 
 // isTypeCompatible checks if two field types are compatible

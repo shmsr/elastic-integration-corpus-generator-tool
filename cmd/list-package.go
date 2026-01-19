@@ -141,10 +141,11 @@ func outputPackageAsJSON(pkg *integrations.Package, dataStream string, showField
 	}
 
 	info := packageInfo{
-		Name:    pkg.Manifest.Name,
-		Title:   pkg.Manifest.Title,
-		Version: pkg.Manifest.Version,
-		Owner:   pkg.Manifest.Owner.Github,
+		Name:        pkg.Manifest.Name,
+		Title:       pkg.Manifest.Title,
+		Version:     pkg.Manifest.Version,
+		Owner:       pkg.Manifest.Owner.Github,
+		DataStreams: []dataStreamInfo{},
 	}
 
 	if dataStream != "" {
