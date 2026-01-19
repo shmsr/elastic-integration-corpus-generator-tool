@@ -540,10 +540,30 @@ func (v *ECSValidator) checkNamingConvention(name string) *ECSFieldIssue {
 		}
 	}
 
-	// Check for camelCase (should be snake_case)
+	// Skip naming convention checks for well-established integration namespaces
+	// These often use product-specific naming that doesn't follow snake_case
+	knownNamespaces := []string{
+		"aws", "azure", "gcp", "google", "elasticsearch", "kibana", "logstash",
+		"kafka", "mongodb", "mysql", "postgresql", "redis", "nginx", "apache",
+		"kubernetes", "docker", "prometheus", "graphite", "statsd", "jolokia",
+		"haproxy", "memcached", "rabbitmq", "activemq", "nats", "stan",
+		"oracle", "mssql", "couchbase", "cassandra", "couchdb", "influxdb",
+		"vsphere", "vmware", "citrix", "cisco", "juniper", "f5",
+		"openai", "salesforce", "okta", "crowdstrike", "zscaler",
+	}
+
+	namespace := strings.ToLower(parts[0])
+	for _, ns := range knownNamespaces {
+		if namespace == ns {
+			// Skip naming checks for known integration namespaces
+			return nil
+		}
+	}
+
+	// Check for camelCase (should be snake_case) - only for unknown namespaces
 	for _, part := range parts {
 		if strings.ToLower(part) != part {
-			// Allow some common abbreviations
+			// Allow common abbreviations
 			if !isCommonAbbreviation(part) {
 				return &ECSFieldIssue{
 					FieldName: name,
@@ -560,13 +580,34 @@ func (v *ECSValidator) checkNamingConvention(name string) *ECSFieldIssue {
 // isCommonAbbreviation checks if a string is a common abbreviation
 func isCommonAbbreviation(s string) bool {
 	abbreviations := []string{
-		"AWS", "GCP", "EC2", "ECS", "EKS", "RDS", "S3", "VPC", "IAM", "CPU", "RAM", "IO", "ID",
-		"URL", "URI", "HTTP", "HTTPS", "TCP", "UDP", "IP", "DNS", "TLS", "SSL", "API",
-		"GB", "MB", "KB", "TB", "PB", "MS", "NS", "OS", "VM", "DB", "SQL", "UI", "UUID",
+		// Cloud providers
+		"AWS", "GCP", "EC2", "ECS", "EKS", "RDS", "S3", "VPC", "IAM", "ALB", "NLB", "ELB",
+		"SQS", "SNS", "SES", "KMS", "ACM", "WAF", "EMR", "ASG", "AMI", "EBS", "EFS",
+		// Azure
+		"ARM", "AKS", "ACR", "AAD", "NSG", "NIC", "VHD",
+		// GCP
+		"GKE", "GCS", "GCE", "GAE", "GCF",
+		// General tech
+		"CPU", "RAM", "IO", "ID", "UUID", "UID", "GID", "PID", "TTL", "MTU",
+		"URL", "URI", "HTTP", "HTTPS", "TCP", "UDP", "IP", "DNS", "TLS", "SSL", "SSH", "FTP",
+		"API", "REST", "RPC", "GRPC", "JSON", "XML", "YAML", "CSV", "HTML", "CSS", "JS",
+		// Storage
+		"GB", "MB", "KB", "TB", "PB", "EB", "IOPS", "SSD", "HDD", "NFS", "CIFS", "SMB",
+		// Time
+		"MS", "NS", "US", "UTC", "GMT",
+		// OS/System
+		"OS", "VM", "DB", "SQL", "CLI", "GUI", "UI", "UX",
+		// Protocols/Standards
+		"LDAP", "SAML", "OIDC", "OAuth", "JWT", "MFA", "SSO", "RBAC",
+		// Metrics
+		"QPS", "TPS", "RPS", "P50", "P90", "P95", "P99", "AVG", "MAX", "MIN", "SUM",
+		// Database
+		"DDL", "DML", "DCL", "CRUD", "ACID",
+		// Kubernetes
+		"K8s", "POD", "PVC", "PV", "CRD",
 	}
-	upper := strings.ToUpper(s)
 	for _, abbr := range abbreviations {
-		if upper == abbr {
+		if strings.EqualFold(s, abbr) {
 			return true
 		}
 	}

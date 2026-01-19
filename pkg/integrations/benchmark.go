@@ -134,9 +134,62 @@ func (g *BenchmarkGenerator) generateFieldsYAML(ds *DataStream, outputDir string
 
 // buildFieldDefinitions converts package fields to benchmark field definitions
 func (g *BenchmarkGenerator) buildFieldDefinitions(ds *DataStream) []FieldDefinition {
-	// Start with common ECS fields
+	// Start with common ECS fields that are always needed
 	fields := []FieldDefinition{
 		{Name: "@timestamp", Type: "date"},
+		// Data stream fields
+		{Name: "data_stream.type", Type: "keyword"},
+		{Name: "data_stream.dataset", Type: "keyword"},
+		{Name: "data_stream.namespace", Type: "keyword"},
+		// Host fields
+		{Name: "host.name", Type: "keyword"},
+		{Name: "host.hostname", Type: "keyword"},
+		{Name: "host.ip", Type: "ip"},
+	}
+
+	// Detect what ECS field groups are needed based on package fields
+	hasCloud := g.hasFieldPrefix(ds.Fields, "cloud.")
+	hasContainer := g.hasFieldPrefix(ds.Fields, "container.")
+	hasLog := g.hasFieldPrefix(ds.Fields, "log.")
+	hasInput := g.hasFieldPrefix(ds.Fields, "input.")
+
+	// Add cloud fields if package uses them or is a cloud package
+	if hasCloud || g.isCloudPackage() {
+		fields = append(fields,
+			FieldDefinition{Name: "cloud.provider", Type: "keyword"},
+			FieldDefinition{Name: "cloud.region", Type: "keyword"},
+			FieldDefinition{Name: "cloud.availability_zone", Type: "keyword"},
+			FieldDefinition{Name: "cloud.account.id", Type: "keyword"},
+			FieldDefinition{Name: "cloud.account.name", Type: "keyword"},
+			FieldDefinition{Name: "cloud.instance.id", Type: "keyword"},
+			FieldDefinition{Name: "cloud.instance.name", Type: "keyword"},
+		)
+	}
+
+	// Add container fields if needed
+	if hasContainer || g.isContainerPackage() {
+		fields = append(fields,
+			FieldDefinition{Name: "container.id", Type: "keyword"},
+			FieldDefinition{Name: "container.name", Type: "keyword"},
+			FieldDefinition{Name: "container.image.name", Type: "keyword"},
+			FieldDefinition{Name: "container.image.tag", Type: "keyword"},
+		)
+	}
+
+	// Add log fields if this appears to be a log data stream
+	if hasLog || strings.Contains(ds.Name, "log") {
+		fields = append(fields,
+			FieldDefinition{Name: "log.level", Type: "keyword"},
+			FieldDefinition{Name: "log.file.path", Type: "keyword"},
+			FieldDefinition{Name: "log.offset", Type: "long"},
+		)
+	}
+
+	// Add input fields if needed
+	if hasInput {
+		fields = append(fields,
+			FieldDefinition{Name: "input.type", Type: "keyword"},
+		)
 	}
 
 	// Add fields from the data stream
@@ -159,21 +212,60 @@ func (g *BenchmarkGenerator) buildFieldDefinitions(ds *DataStream) []FieldDefini
 		})
 	}
 
-	// Add common agent fields
+	// Add common agent/event fields at the end
 	commonFields := []FieldDefinition{
 		{Name: "agent.id", Type: "keyword"},
 		{Name: "agent.name", Type: "keyword"},
+		{Name: "agent.type", Type: "keyword"},
+		{Name: "agent.version", Type: "keyword"},
 		{Name: "agent.ephemeral_id", Type: "keyword", Example: "12f376ef-5186-4e8b-a175-70f1140a8f30"},
+		{Name: "ecs.version", Type: "keyword"},
 		{Name: "event.dataset", Type: "keyword"},
 		{Name: "event.module", Type: "keyword"},
 		{Name: "event.duration", Type: "long"},
 		{Name: "metricset.period", Type: "long"},
 		{Name: "metricset.name", Type: "keyword"},
+		{Name: "service.type", Type: "keyword"},
+		{Name: "service.address", Type: "keyword"},
 	}
 
 	fields = append(fields, commonFields...)
 
 	return fields
+}
+
+// hasFieldPrefix checks if any field starts with the given prefix
+func (g *BenchmarkGenerator) hasFieldPrefix(fields []PackageField, prefix string) bool {
+	for _, f := range fields {
+		if strings.HasPrefix(f.Name, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// isCloudPackage returns true if this is a cloud provider package
+func (g *BenchmarkGenerator) isCloudPackage() bool {
+	cloudPrefixes := []string{"aws", "azure", "gcp", "google_cloud"}
+	name := strings.ToLower(g.config.PackageName)
+	for _, prefix := range cloudPrefixes {
+		if strings.HasPrefix(name, prefix) || name == prefix {
+			return true
+		}
+	}
+	return false
+}
+
+// isContainerPackage returns true if this is a container/kubernetes package
+func (g *BenchmarkGenerator) isContainerPackage() bool {
+	containerKeywords := []string{"kubernetes", "docker", "container", "k8s", "ecs", "fargate"}
+	name := strings.ToLower(g.config.PackageName)
+	for _, kw := range containerKeywords {
+		if strings.Contains(name, kw) {
+			return true
+		}
+	}
+	return false
 }
 
 // mapFieldType maps Elasticsearch field types to generator types
@@ -196,6 +288,8 @@ func mapFieldType(esType string) string {
 		"constant_keyword": "keyword",
 		"flattened":        "object",
 		"object":           "object",
+		"wildcard":         "keyword",
+		"match_only_text":  "keyword",
 	}
 
 	if mapped, ok := typeMap[esType]; ok {
@@ -222,42 +316,125 @@ func (g *BenchmarkGenerator) buildConfigFields(ds *DataStream) ConfigFile {
 		Fields: []ConfigFieldDef{
 			// Timestamp with 1 hour period
 			{Name: "@timestamp", Period: "60m"},
+			// Data stream fields
+			{Name: "data_stream.type", Value: "metrics"},
+			{Name: "data_stream.dataset", Value: fmt.Sprintf("%s.%s", g.config.PackageName, ds.Name)},
+			{Name: "data_stream.namespace", Value: "default"},
+			// Host fields
+			{Name: "host.name", Value: "host.local"},
+			{Name: "host.hostname", Value: "host.local"},
+			{Name: "host.ip", Cardinality: 10},
 			// Common agent fields with fixed values
 			{Name: "agent.id", Value: "12f376ef-5186-4e8b-a175-70f1140a8f30"},
 			{Name: "agent.ephemeral_id", Value: "5fd278ce-2a12-4a09-a125-0c5b39aa69e3"},
 			{Name: "agent.name", Value: "host.local"},
+			{Name: "agent.type", Value: "metricbeat"},
+			{Name: "agent.version", Value: "8.12.0"},
+			{Name: "ecs.version", Value: "8.11.0"},
 			{Name: "event.dataset", Value: fmt.Sprintf("%s.%s", g.config.PackageName, ds.Name)},
 			{Name: "event.module", Value: g.config.PackageName},
 			{Name: "event.duration", Range: &Range{Min: 1, Max: 1000}},
 			{Name: "metricset.period", Value: "60000"},
 			{Name: "metricset.name", Value: ds.Name},
+			{Name: "service.type", Value: g.config.PackageName},
+			{Name: "service.address", Value: "localhost:9200"},
 		},
 	}
 
-	// Add AWS-specific fields if this is an AWS package
-	if strings.HasPrefix(g.config.PackageName, "aws") || g.config.PackageName == "aws" {
-		config.Fields = append(config.Fields,
-			ConfigFieldDef{
-				Name: "cloud.region",
-				Enum: []string{
-					"us-east-1", "us-east-2", "us-west-1", "us-west-2",
-					"eu-west-1", "eu-west-2", "eu-west-3", "eu-central-1",
-					"ap-northeast-1", "ap-northeast-2", "ap-southeast-1", "ap-southeast-2",
+	// Detect what's needed from package fields
+	hasCloud := g.hasFieldPrefix(ds.Fields, "cloud.") || g.isCloudPackage()
+	hasContainer := g.hasFieldPrefix(ds.Fields, "container.") || g.isContainerPackage()
+	hasLog := g.hasFieldPrefix(ds.Fields, "log.") || strings.Contains(ds.Name, "log")
+	hasInput := g.hasFieldPrefix(ds.Fields, "input.")
+
+	// Add cloud-specific fields
+	if hasCloud {
+		if g.isCloudPackage() && strings.HasPrefix(strings.ToLower(g.config.PackageName), "aws") {
+			config.Fields = append(config.Fields,
+				ConfigFieldDef{
+					Name: "cloud.region",
+					Enum: []string{
+						"us-east-1", "us-east-2", "us-west-1", "us-west-2",
+						"eu-west-1", "eu-west-2", "eu-west-3", "eu-central-1",
+						"ap-northeast-1", "ap-northeast-2", "ap-southeast-1", "ap-southeast-2",
+					},
+					Cardinality: 12,
 				},
-				Cardinality: 12,
-			},
+				ConfigFieldDef{Name: "cloud.provider", Value: "aws"},
+			)
+		} else if g.isCloudPackage() && strings.HasPrefix(strings.ToLower(g.config.PackageName), "azure") {
+			config.Fields = append(config.Fields,
+				ConfigFieldDef{
+					Name: "cloud.region",
+					Enum: []string{
+						"eastus", "eastus2", "westus", "westus2", "centralus",
+						"northeurope", "westeurope", "uksouth", "ukwest",
+					},
+					Cardinality: 9,
+				},
+				ConfigFieldDef{Name: "cloud.provider", Value: "azure"},
+			)
+		} else if g.isCloudPackage() && strings.HasPrefix(strings.ToLower(g.config.PackageName), "gcp") {
+			config.Fields = append(config.Fields,
+				ConfigFieldDef{
+					Name: "cloud.region",
+					Enum: []string{
+						"us-central1", "us-east1", "us-west1", "europe-west1",
+						"asia-east1", "asia-southeast1",
+					},
+					Cardinality: 6,
+				},
+				ConfigFieldDef{Name: "cloud.provider", Value: "gcp"},
+			)
+		} else {
+			config.Fields = append(config.Fields,
+				ConfigFieldDef{Name: "cloud.provider", Cardinality: 5},
+				ConfigFieldDef{Name: "cloud.region", Cardinality: 10},
+			)
+		}
+		config.Fields = append(config.Fields,
 			ConfigFieldDef{Name: "cloud.account.id", Value: "123456789012"},
 			ConfigFieldDef{Name: "cloud.account.name", Value: "sample-account"},
-			ConfigFieldDef{Name: "cloud.provider", Value: "aws"},
+			ConfigFieldDef{Name: "cloud.availability_zone", Cardinality: 3},
+			ConfigFieldDef{Name: "cloud.instance.id", Cardinality: 20},
+			ConfigFieldDef{Name: "cloud.instance.name", Cardinality: 20},
+		)
+	}
+
+	// Add container-specific fields
+	if hasContainer {
+		config.Fields = append(config.Fields,
+			ConfigFieldDef{Name: "container.id", Cardinality: 50},
+			ConfigFieldDef{Name: "container.name", Cardinality: 20},
+			ConfigFieldDef{Name: "container.image.name", Cardinality: 10},
+			ConfigFieldDef{Name: "container.image.tag", Enum: []string{"latest", "v1.0", "v1.1", "v2.0"}},
 		)
 	}
 
 	// Add Kubernetes-specific fields
-	if strings.HasPrefix(g.config.PackageName, "kubernetes") || g.config.PackageName == "kubernetes" {
+	if g.isContainerPackage() && strings.Contains(strings.ToLower(g.config.PackageName), "kubernetes") {
 		config.Fields = append(config.Fields,
 			ConfigFieldDef{Name: "orchestrator.cluster.name", Value: "sample-cluster"},
-			ConfigFieldDef{Name: "kubernetes.namespace", Cardinality: 10, Fuzziness: 0.1},
-			ConfigFieldDef{Name: "kubernetes.node.name", Cardinality: 5, Fuzziness: 0.1},
+			ConfigFieldDef{Name: "kubernetes.namespace", Cardinality: 10},
+			ConfigFieldDef{Name: "kubernetes.node.name", Cardinality: 5},
+			ConfigFieldDef{Name: "kubernetes.pod.name", Cardinality: 50},
+			ConfigFieldDef{Name: "kubernetes.pod.uid", Cardinality: 50},
+		)
+	}
+
+	// Add log fields
+	if hasLog {
+		config.Fields = append(config.Fields,
+			ConfigFieldDef{Name: "log.level", Enum: []string{"debug", "info", "warn", "error", "fatal"}},
+			ConfigFieldDef{Name: "log.file.path", Value: "/var/log/app.log"},
+			ConfigFieldDef{Name: "log.offset", Range: &Range{Min: 0, Max: 1000000}},
+		)
+	}
+
+	// Add input fields
+	if hasInput {
+		config.Fields = append(config.Fields,
+			ConfigFieldDef{Name: "input.type", Value: "metrics"},
 		)
 	}
 
@@ -289,7 +466,7 @@ func (g *BenchmarkGenerator) generateFieldConfig(f PackageField) *ConfigFieldDef
 		cfg.Range = &Range{Min: 0, Max: 100}
 		cfg.Cardinality = 100
 		cfg.Fuzziness = 0.2
-	case "keyword", "constant_keyword":
+	case "keyword", "constant_keyword", "text", "wildcard", "match_only_text":
 		if f.Dimension {
 			cfg.Cardinality = 50
 		} else {
@@ -299,6 +476,8 @@ func (g *BenchmarkGenerator) generateFieldConfig(f PackageField) *ConfigFieldDef
 		cfg.Enum = []string{"true", "false"}
 	case "ip":
 		cfg.Cardinality = 50
+	case "date":
+		cfg.Period = "60m"
 	default:
 		return nil // Skip unknown types
 	}
@@ -332,12 +511,15 @@ func (g *BenchmarkGenerator) buildTemplate(ds *DataStream) string {
 		insertField(root, parts, f)
 	}
 
+	// Detect what's needed
+	hasCloud := g.hasFieldPrefix(ds.Fields, "cloud.") || g.isCloudPackage()
+	hasContainer := g.hasFieldPrefix(ds.Fields, "container.") || g.isContainerPackage()
+	hasLog := g.hasFieldPrefix(ds.Fields, "log.") || strings.Contains(ds.Name, "log")
+
 	// Generate variable declarations
 	buf.WriteString(`{{- $timestamp := generate "@timestamp" }}
 `)
 
-	// Check for cloud fields
-	hasCloud := root.children["cloud"] != nil || strings.HasPrefix(g.config.PackageName, "aws")
 	if hasCloud {
 		buf.WriteString(`{{- $cloudRegion := generate "cloud.region" }}
 {{- $cloudAccountId := generate "cloud.account.id" }}
@@ -347,6 +529,16 @@ func (g *BenchmarkGenerator) buildTemplate(ds *DataStream) string {
 	// Start JSON object
 	buf.WriteString(`{
     "@timestamp": "{{$timestamp.Format "2006-01-02T15:04:05.999999Z07:00"}}",
+    "data_stream": {
+        "type": "{{generate "data_stream.type"}}",
+        "dataset": "{{generate "data_stream.dataset"}}",
+        "namespace": "{{generate "data_stream.namespace"}}"
+    },
+    "host": {
+        "name": "{{generate "host.name"}}",
+        "hostname": "{{generate "host.hostname"}}",
+        "ip": ["{{generate "host.ip"}}"]
+    },
 `)
 
 	// Generate cloud section if needed
@@ -354,9 +546,27 @@ func (g *BenchmarkGenerator) buildTemplate(ds *DataStream) string {
 		buf.WriteString(`    "cloud": {
         "provider": "{{generate "cloud.provider"}}",
         "region": "{{$cloudRegion}}",
+        "availability_zone": "{{generate "cloud.availability_zone"}}",
         "account": {
             "id": "{{$cloudAccountId}}",
             "name": "{{generate "cloud.account.name"}}"
+        },
+        "instance": {
+            "id": "{{generate "cloud.instance.id"}}",
+            "name": "{{generate "cloud.instance.name"}}"
+        }
+    },
+`)
+	}
+
+	// Generate container section if needed
+	if hasContainer {
+		buf.WriteString(`    "container": {
+        "id": "{{generate "container.id"}}",
+        "name": "{{generate "container.name"}}",
+        "image": {
+            "name": "{{generate "container.image.name"}}",
+            "tag": "{{generate "container.image.tag"}}"
         }
     },
 `)
@@ -373,9 +583,21 @@ func (g *BenchmarkGenerator) buildTemplate(ds *DataStream) string {
         "period": {{generate "metricset.period"}}
     },
     "ecs": {
-        "version": "8.11.0"
+        "version": "{{generate "ecs.version"}}"
     },
 `, g.config.PackageName, ds.Name, g.config.PackageName, ds.Name))
+
+	// Generate log section if needed
+	if hasLog {
+		buf.WriteString(`    "log": {
+        "level": "{{generate "log.level"}}",
+        "file": {
+            "path": "{{generate "log.file.path"}}"
+        },
+        "offset": {{generate "log.offset"}}
+    },
+`)
+	}
 
 	// Generate main data section based on package name
 	mainSection := g.config.PackageName
@@ -385,7 +607,8 @@ func (g *BenchmarkGenerator) buildTemplate(ds *DataStream) string {
 
 	// Generate service section
 	buf.WriteString(fmt.Sprintf(`    "service": {
-        "type": "%s"
+        "type": "%s",
+        "address": "{{generate "service.address"}}"
     },
 `, g.config.PackageName))
 
@@ -393,8 +616,8 @@ func (g *BenchmarkGenerator) buildTemplate(ds *DataStream) string {
 	buf.WriteString(`    "agent": {
         "id": "{{generate "agent.id"}}",
         "name": "{{generate "agent.name"}}",
-        "type": "metricbeat",
-        "version": "8.0.0",
+        "type": "{{generate "agent.type"}}",
+        "version": "{{generate "agent.version"}}",
         "ephemeral_id": "{{generate "agent.ephemeral_id"}}"
     }
 }
