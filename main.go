@@ -25,6 +25,7 @@ func main() {
 	rootCmd.AddCommand(cmd.AnalyzeCoverageCmd())
 	rootCmd.AddCommand(cmd.ValidateECSCmd())
 	rootCmd.AddCommand(cmd.ListPackageCmd())
+	rootCmd.AddCommand(cmd.GenerateSampleEventCmd())
 
 	err := rootCmd.Execute()
 	if err != nil {

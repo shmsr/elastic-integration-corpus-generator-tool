@@ -10,6 +10,7 @@ The corpus generator provides several commands specifically designed to help int
 |---------|-------------|
 | `list-package` | Explore integration packages and their data streams |
 | `generate-benchmark` | Auto-generate Rally benchmark files |
+| `generate-sample-event` | Generate sample_event.json for a data stream |
 | `analyze-coverage` | Analyze field coverage in templates |
 | `validate-ecs` | Validate fields against ECS |
 
@@ -126,6 +127,79 @@ The generator automatically:
 - Adds AWS-specific fields (regions, account IDs) for AWS packages
 - Adds Kubernetes-specific fields for Kubernetes packages
 - Includes common ECS fields (agent, event, etc.)
+
+---
+
+## generate-sample-event
+
+Generate a `sample_event.json` file for a data stream. This is useful for documentation
+and testing within integration packages.
+
+### Usage
+
+```bash
+# Generate from package (prints to stdout)
+elastic-integration-corpus-generator-tool generate-sample-event \
+  --package-path /path/to/packages/aws \
+  --data-stream billing
+
+# Write to a specific file
+elastic-integration-corpus-generator-tool generate-sample-event \
+  --package-path /path/to/packages/aws \
+  --data-stream billing \
+  --output ./sample_event.json
+
+# Write directly to package's data_stream directory
+elastic-integration-corpus-generator-tool generate-sample-event \
+  --package-path /path/to/packages/aws \
+  --data-stream billing \
+  --output-mode package
+
+# Generate from existing benchmark files
+elastic-integration-corpus-generator-tool generate-sample-event \
+  --template ./template.ndjson \
+  --fields ./fields.yml \
+  --config ./config.yml
+```
+
+### Flags
+
+| Flag | Short | Description | Default |
+|------|-------|-------------|---------|
+| `--package-path` | `-p` | Path to the integration package | |
+| `--data-stream` | `-d` | Data stream name | |
+| `--output` | `-o` | Output file path | stdout |
+| `--output-mode` | | `package` writes to `data_stream/<name>/sample_event.json` | |
+| `--template` | `-t` | Path to existing template.ndjson | |
+| `--fields` | `-f` | Path to existing fields.yml | |
+| `--config` | `-c` | Path to existing config.yml | |
+| `--pretty` | | Pretty-print JSON output | `true` |
+
+### Example Output
+
+```json
+{
+    "@timestamp": "2024-01-15T10:30:00.000Z",
+    "event": {
+        "dataset": "aws.billing",
+        "module": "aws"
+    },
+    "aws": {
+        "billing": {
+            "amount": 125.50,
+            "currency": "USD",
+            "service_name": "AmazonEC2"
+        }
+    },
+    "cloud": {
+        "provider": "aws",
+        "region": "us-east-1",
+        "account": {
+            "id": "123456789012"
+        }
+    }
+}
+```
 
 ---
 

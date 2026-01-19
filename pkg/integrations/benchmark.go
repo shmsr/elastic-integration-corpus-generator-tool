@@ -538,11 +538,15 @@ func (g *BenchmarkGenerator) generateTemplate(ds *DataStream, outputDir string) 
 func (g *BenchmarkGenerator) buildTemplate(ds *DataStream) string {
 	var buf bytes.Buffer
 
-	// Build a tree structure from field names
+	// Build a tree structure from field names (only include fields with valid types)
 	root := &jsonNode{children: make(map[string]*jsonNode)}
 
 	for i := range ds.Fields {
 		f := &ds.Fields[i]
+		// Skip fields without a valid type - they can't be generated
+		if mapFieldType(f.Type) == "" {
+			continue
+		}
 		parts := strings.Split(f.Name, ".")
 		insertField(root, parts, f)
 	}
@@ -555,10 +559,15 @@ func (g *BenchmarkGenerator) buildTemplate(ds *DataStream) string {
 	// Find primary namespaces from actual fields (excluding ECS fields)
 	ecsNamespaces := map[string]bool{
 		"@timestamp": true, "agent": true, "cloud": true, "container": true,
-		"data_stream": true, "ecs": true, "error": true, "event": true,
-		"file": true, "host": true, "input": true, "log": true, "message": true,
-		"metricset": true, "orchestrator": true, "process": true, "related": true,
-		"service": true, "source": true, "tags": true, "url": true, "user": true,
+		"data_stream": true, "destination": true, "dns": true, "ecs": true,
+		"error": true, "event": true, "file": true, "geo": true, "group": true,
+		"host": true, "http": true, "input": true, "labels": true, "log": true,
+		"message": true, "metricset": true, "network": true, "observer": true,
+		"orchestrator": true, "organization": true, "os": true, "process": true,
+		"related": true, "rule": true, "server": true, "service": true,
+		"source": true, "tags": true, "threat": true, "tls": true, "trace": true,
+		"transaction": true, "url": true, "user": true, "user_agent": true,
+		"vulnerability": true,
 	}
 	dataNamespaces := g.detectDataNamespaces(ds.Fields, ecsNamespaces)
 
